@@ -34,7 +34,7 @@ func (s *System) canMoveCursorForward(inputCorrect bool, currentIndex int, curre
 
 func markWord(word string, isCorrect bool) string {
 	if isCorrect {
-		return "\033[1;46m" + word + "\033[0m"
+		return "\033[1;30;47m" + word + "\033[0m"
 	} else {
 		return "\033[37;1;41m" + word + "\033[0m"
 	}

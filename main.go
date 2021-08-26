@@ -80,7 +80,7 @@ func layout(g *gocui.Gui) error {
 		v.Title = "WPM"
 	}
 
-	if v, err := g.SetView("input", 0, statsBottom+1, maxX-1, maxY-1); err != nil {
+	if v, err := g.SetView("input", 0, statsBottom+1, maxX-1, statsBottom+4); err != nil {
 		p := passage
 		s := System{
 			nextWord:         make(chan bool),
@@ -101,7 +101,7 @@ func layout(g *gocui.Gui) error {
 		v.Editor = gocui.EditorFunc(s.typingEditor)
 
 		v.Wrap = true
-		v.Title = "Type"
+		v.Title = "Type Here"
 		g.SetCurrentView("input")
 	}
 
