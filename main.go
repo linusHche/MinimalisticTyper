@@ -19,7 +19,7 @@ type Word struct {
 	index int
 }
 
-type System struct {
+type TypingRound struct {
 	nextWord         chan bool
 	keyStroke        chan KeyStroke
 	originalPrompt   string
@@ -31,6 +31,11 @@ type System struct {
 	characters       int
 }
 
+type System struct {
+	newPassage       chan string
+	completedPassage chan bool
+}
+
 var passage string = "Born too late to explore the Earth. Born too soon to explore the universe. Born just in time to code in Golang."
 
 func main() {
@@ -40,8 +45,32 @@ func main() {
 	}
 	defer g.Close()
 
-	g.SetManagerFunc(layout)
+	s := System{
+		newPassage:       make(chan string),
+		completedPassage: make(chan bool),
+	}
 
+	go func(s *System, g *gocui.Gui) {
+		for {
+			select {
+			case p := <-s.newPassage:
+				tr := TypingRound{
+					nextWord:         make(chan bool),
+					keyStroke:        make(chan KeyStroke),
+					originalPrompt:   p,
+					words:            processPrompt(p),
+					gui:              g,
+					currentWordIndex: 0,
+					inputCorrect:     false,
+					hasStarted:       false,
+					characters:       0,
+				}
+				g.SetManagerFunc(tr.layout)
+			default:
+			}
+		}
+	}(&s, g)
+	s.newPassage <- passage
 	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
 		log.Panicln(err)
 	}
@@ -51,7 +80,8 @@ func main() {
 	}
 }
 
-func layout(g *gocui.Gui) error {
+func (tr *TypingRound) layout(g *gocui.Gui) error {
+
 	maxX, maxY := g.Size()
 
 	g.Cursor = true
@@ -81,24 +111,12 @@ func layout(g *gocui.Gui) error {
 	}
 
 	if v, err := g.SetView("input", 0, statsBottom+1, maxX-1, statsBottom+4); err != nil {
-		p := passage
-		s := System{
-			nextWord:         make(chan bool),
-			keyStroke:        make(chan KeyStroke),
-			originalPrompt:   p,
-			words:            processPrompt(p),
-			gui:              g,
-			currentWordIndex: 0,
-			inputCorrect:     false,
-			hasStarted:       false,
-			characters:       0,
-		}
-		go s.handleType(g)
+		go tr.handleType(g)
 		if err != gocui.ErrUnknownView {
 			return err
 		}
 		v.Editable = true
-		v.Editor = gocui.EditorFunc(s.typingEditor)
+		v.Editor = gocui.EditorFunc(tr.typingEditor)
 
 		v.Wrap = true
 		v.Title = "Type Here"
@@ -108,7 +126,7 @@ func layout(g *gocui.Gui) error {
 	return nil
 }
 
-func (s *System) handleType(g *gocui.Gui) {
+func (s *TypingRound) handleType(g *gocui.Gui) {
 	og := passage
 
 	for {
@@ -121,7 +139,7 @@ func (s *System) handleType(g *gocui.Gui) {
 
 }
 
-func (s *System) updatePromptView(v *gocui.View, og string, input gocui.Key) error {
+func (s *TypingRound) updatePromptView(v *gocui.View, og string, input gocui.Key) error {
 
 	wordOutput := make([]string, len(s.words))
 
@@ -148,7 +166,7 @@ func (s *System) updatePromptView(v *gocui.View, og string, input gocui.Key) err
 	return nil
 }
 
-func (s *System) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+func (s *TypingRound) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 
 	if !s.hasStarted {
 		s.hasStarted = true
