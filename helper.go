@@ -19,17 +19,13 @@ func processPrompt(p string) []Word {
 	return w
 }
 
-func (s *TypingRound) checkIfCanMoveOnToNextWord() bool {
-	return strings.TrimSpace(s.gui.CurrentView().ViewBuffer()) == s.words[s.currentWordIndex].text
+func (s *System) checkIfCanMoveOnToNextWord() bool {
+	return strings.TrimSpace(s.gui.CurrentView().ViewBuffer()) == s.tr.words[s.tr.currentWordIndex].text
 }
 
-func (s *TypingRound) isCorrectSoFar() bool {
+func (s *System) isCorrectSoFar() bool {
 	buffer := strings.TrimSpace(s.gui.CurrentView().ViewBuffer())
-	return strings.HasPrefix(s.words[s.currentWordIndex].text, buffer) || buffer == ""
-}
-
-func (s *TypingRound) canMoveCursorForward(inputCorrect bool, currentIndex int, currentWordIndex int) bool {
-	return inputCorrect && currentIndex < len(s.originalPrompt)-1 && strings.HasPrefix(s.words[currentWordIndex].text, strings.TrimSpace(s.gui.CurrentView().ViewBuffer()))
+	return strings.HasPrefix(s.tr.words[s.tr.currentWordIndex].text, buffer) || buffer == ""
 }
 
 func markWord(word string, isCorrect bool) string {

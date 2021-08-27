@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/guptarohit/asciigraph"
 	"github.com/jroimartin/gocui"
 )
 
@@ -24,19 +25,22 @@ type TypingRound struct {
 	keyStroke        chan KeyStroke
 	originalPrompt   string
 	words            []Word
-	gui              *gocui.Gui
 	currentWordIndex int
 	inputCorrect     bool
 	hasStarted       bool
-	characters       int
+	data             []float64
 }
 
 type System struct {
 	newPassage       chan string
 	completedPassage chan bool
+	tr               *TypingRound
+	gui              *gocui.Gui
 }
 
 var passage string = "Born too late to explore the Earth. Born too soon to explore the universe. Born just in time to code in Golang."
+
+// var passage string = "Born too"
 
 func main() {
 	g, err := gocui.NewGui(gocui.OutputNormal)
@@ -48,29 +52,20 @@ func main() {
 	s := System{
 		newPassage:       make(chan string),
 		completedPassage: make(chan bool),
+		gui:              g,
+		tr: &TypingRound{
+			nextWord:         make(chan bool),
+			keyStroke:        make(chan KeyStroke),
+			originalPrompt:   passage,
+			words:            processPrompt(passage),
+			currentWordIndex: 0,
+			inputCorrect:     false,
+			hasStarted:       false,
+		},
 	}
 
-	go func(s *System, g *gocui.Gui) {
-		for {
-			select {
-			case p := <-s.newPassage:
-				tr := TypingRound{
-					nextWord:         make(chan bool),
-					keyStroke:        make(chan KeyStroke),
-					originalPrompt:   p,
-					words:            processPrompt(p),
-					gui:              g,
-					currentWordIndex: 0,
-					inputCorrect:     false,
-					hasStarted:       false,
-					characters:       0,
-				}
-				g.SetManagerFunc(tr.layout)
-			default:
-			}
-		}
-	}(&s, g)
-	s.newPassage <- passage
+	g.SetManagerFunc(s.typingRoundLayout)
+	go s.handleViews(g)
 	if err := g.SetKeybinding("", gocui.KeyCtrlC, gocui.ModNone, quit); err != nil {
 		log.Panicln(err)
 	}
@@ -80,8 +75,7 @@ func main() {
 	}
 }
 
-func (tr *TypingRound) layout(g *gocui.Gui) error {
-
+func (s *System) renderTypingView(g *gocui.Gui, p string, completed chan bool) error {
 	maxX, maxY := g.Size()
 
 	g.Cursor = true
@@ -98,52 +92,85 @@ func (tr *TypingRound) layout(g *gocui.Gui) error {
 
 	statsBottom := paragraphBottom + 1
 
-	// if v, err := g.SetView("graph", 0, paragraphBottom+1, maxX-1, statsBottom); err != nil {
-	// 	if err != gocui.ErrUnknownView {
-	// 		return err
-	// 	}
-	// 	v.Title = "WPM"
-	// }
-
 	if v, err := g.SetView("WPM", maxX-10, statsBottom-4, maxX-2, paragraphBottom-1); err != nil {
-		fmt.Fprintln(v, 0)
 		v.Title = "WPM"
 	}
 
 	if v, err := g.SetView("input", 0, statsBottom+1, maxX-1, statsBottom+4); err != nil {
-		go tr.handleType(g)
+		go s.handleType(g, completed)
 		if err != gocui.ErrUnknownView {
 			return err
 		}
 		v.Editable = true
-		v.Editor = gocui.EditorFunc(tr.typingEditor)
+		v.Editor = gocui.EditorFunc(s.typingEditor)
 
 		v.Wrap = true
 		v.Title = "Type Here"
 		g.SetCurrentView("input")
 	}
+	return nil
+}
+
+func (s *System) renderStatsView(g *gocui.Gui) error {
+	maxX, maxY := g.Size()
+
+	if v, err := g.SetView("stats", 0, 0, maxX-1, maxY-1); err != nil {
+		v.Title = "stats"
+		graph := asciigraph.Plot(s.tr.data, asciigraph.Height(maxY*90/100), asciigraph.Offset(2), asciigraph.Precision(0), asciigraph.Width(maxX*9/10))
+		fmt.Fprintln(v, graph)
+		g.SetCurrentView("stats")
+	}
 
 	return nil
 }
 
-func (s *TypingRound) handleType(g *gocui.Gui) {
+func (s *System) handleViews(g *gocui.Gui) {
+	for {
+		select {
+		case p := <-s.newPassage:
+			g.Update(func(g *gocui.Gui) error {
+				g.DeleteView("stats")
+				return s.renderTypingView(g, p, s.completedPassage)
+			})
+		case <-s.completedPassage:
+			g.Update(func(g *gocui.Gui) error {
+				// g.DeleteView("paragraph")
+				// g.DeleteView("WPM")
+				// g.DeleteView("input")
+				return s.renderStatsView(g)
+			})
+		}
+	}
+}
+
+func (s *System) typingRoundLayout(g *gocui.Gui) error {
+	return s.renderTypingView(g, passage, s.completedPassage)
+}
+
+func (s *System) handleType(g *gocui.Gui, completed chan bool) {
 	og := passage
 
+outer:
 	for {
-		t := <-s.keyStroke
-		g.Update(func(g *gocui.Gui) error {
-			v, _ := g.View("paragraph")
-			return s.updatePromptView(v, og, t.key)
-		})
+		select {
+		case t := <-s.tr.keyStroke:
+			g.Update(func(g *gocui.Gui) error {
+				v, _ := g.View("paragraph")
+				return s.updatePromptView(v, og, t.key)
+			})
+		case <-completed:
+			break outer
+		default:
+		}
 	}
 
 }
 
-func (s *TypingRound) updatePromptView(v *gocui.View, og string, input gocui.Key) error {
+func (s *System) updatePromptView(v *gocui.View, og string, input gocui.Key) error {
 
-	wordOutput := make([]string, len(s.words))
+	wordOutput := make([]string, len(s.tr.words))
 
-	for i, w := range s.words {
+	for i, w := range s.tr.words {
 		wordOutput[i] = w.text
 	}
 
@@ -151,49 +178,48 @@ func (s *TypingRound) updatePromptView(v *gocui.View, og string, input gocui.Key
 
 	if input == gocui.KeySpace {
 		if canMoveToNextWord {
-			s.nextWord <- true
-			s.currentWordIndex++
-			if s.currentWordIndex == len(s.words) {
-				return gocui.ErrQuit
+			s.tr.currentWordIndex++
+			s.tr.nextWord <- true
+			if s.tr.currentWordIndex == len(s.tr.words) {
+				s.completedPassage <- true
+				return nil
 			}
 		}
 	}
 
-	wordOutput[s.currentWordIndex] = markWord(wordOutput[s.currentWordIndex], s.isCorrectSoFar() || canMoveToNextWord)
+	wordOutput[s.tr.currentWordIndex] = markWord(wordOutput[s.tr.currentWordIndex], s.isCorrectSoFar() || canMoveToNextWord)
 
 	v.Clear()
 	fmt.Fprintln(v, strings.Join(wordOutput, " "))
 	return nil
 }
 
-func (s *TypingRound) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+func (s *System) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
 
-	if !s.hasStarted {
-		s.hasStarted = true
+	if !s.tr.hasStarted {
+		s.tr.hasStarted = true
 		go func() {
 			start := time.Now()
-			var data []float64
-			data = append(data, 0)
+			s.tr.data = append(s.tr.data, 0)
+		outer:
 			for {
-				<-time.After(time.Second / 2)
-				s.gui.Update(func(g *gocui.Gui) error {
-					// gv, _ := g.View("graph")
-					wv, _ := g.View("WPM")
-					if s.currentWordIndex < len(s.words) {
-						chars := s.words[s.currentWordIndex].index
-						t := time.Now()
-						curWPM := float64(chars) / t.Sub(start).Seconds() / 5 * 60
-						data = append(data, curWPM)
-						// gv.Clear()
-						wv.Clear()
-						// width, height := gv.Size()
-						// graph := asciigraph.Plot(data, asciigraph.Height(height*9/10), asciigraph.Offset(2), asciigraph.Precision(0), asciigraph.Width(width*9/10))
-						// fmt.Fprintln(gv, graph)
-						fmt.Fprintln(wv, int(curWPM))
-						// fmt.Fprintln(sv, int(float64(chars)/t.Sub(start).Seconds()/5*60))
-					}
-					return nil
-				})
+				select {
+				case <-time.After(time.Second / 2):
+					s.gui.Update(func(g *gocui.Gui) error {
+						wv, _ := g.View("WPM")
+						if s.tr.currentWordIndex < len(s.tr.words) {
+							chars := s.tr.words[s.tr.currentWordIndex].index
+							t := time.Now()
+							curWPM := float64(chars) / t.Sub(start).Seconds() / 5 * 60
+							s.tr.data = append(s.tr.data, curWPM)
+							wv.Clear()
+							fmt.Fprintln(wv, int(curWPM))
+						}
+						return nil
+					})
+				case <-s.completedPassage:
+					break outer
+				}
 			}
 		}()
 	}
@@ -202,7 +228,7 @@ func (s *TypingRound) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod go
 		key:  key,
 		char: ch,
 	}
-	s.keyStroke <- ks
+	s.tr.keyStroke <- ks
 	switch key {
 	case gocui.KeyBackspace2:
 		v.EditDelete(true)
@@ -215,7 +241,7 @@ func (s *TypingRound) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod go
 		v.SetCursor(0, 0)
 	case gocui.KeySpace:
 		go func() {
-			nw := <-s.nextWord
+			nw := <-s.tr.nextWord
 			if nw {
 				s.gui.Update(func(g *gocui.Gui) error {
 					v, _ := g.View("input")
