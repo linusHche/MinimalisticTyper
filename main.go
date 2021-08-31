@@ -35,13 +35,10 @@ type System struct {
 	newPassage       chan string
 	completedPassage chan bool
 	tr               *TypingRound
-	gui              *gocui.Gui
+	g                *gocui.Gui
 	passages         []string
 }
 
-var passage string = "Born too late to explore the Earth. Born too soon to explore the universe. Born just in time to code in Golang."
-
-// var passage string = "Born too"
 var file, _ = os.OpenFile("logs.txt", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0666)
 
 func main() {
@@ -58,20 +55,13 @@ func main() {
 
 	log.SetOutput(file)
 
+	ps := strings.Split(string(data), "\n")
 	s := System{
 		newPassage:       make(chan string),
 		completedPassage: make(chan bool, 3),
-		gui:              g,
-		tr: &TypingRound{
-			nextWord:         make(chan bool),
-			keyStroke:        make(chan KeyStroke),
-			originalPrompt:   passage,
-			words:            processPrompt(passage),
-			currentWordIndex: 0,
-			inputCorrect:     false,
-			hasStarted:       false,
-		},
-		passages: strings.Split(string(data), "\n"),
+		g:                g,
+		tr:               makeTypingRound(getRandomPassage(ps)),
+		passages:         ps,
 	}
 
 	g.SetManagerFunc(s.typingRoundLayout)
@@ -90,55 +80,53 @@ func (s *System) handleViews(g *gocui.Gui) {
 		select {
 		case p := <-s.newPassage:
 			g.Update(func(g *gocui.Gui) error {
-				s.tr.originalPrompt = p
-				s.tr.words = processPrompt(p)
-				s.tr.currentWordIndex = 0
-				s.tr.inputCorrect = false
-				s.tr.hasStarted = false
-				s.tr.data = s.tr.data[:0]
+				s.tr = makeTypingRound(p)
+
 				g.DeleteView("paragraph")
-				g.DeleteView("averageWPM")
-				g.DeleteView("continue")
 				g.DeleteView("WPM")
 				g.DeleteView("input")
 				g.DeleteView("stats")
-				return s.renderTypingView(g, p, s.completedPassage)
+				g.DeleteView("averageWPM")
+				g.DeleteView("continue")
+				g.DeleteView("skip")
+				return s.renderTypingView()
 			})
-		case <-s.completedPassage:
-			g.Update(func(g *gocui.Gui) error {
-				return s.renderStatsView(g)
-			})
+		case c := <-s.completedPassage:
+			if c {
+				g.Update(func(g *gocui.Gui) error {
+					return s.renderStatsView()
+				})
+			}
 		}
 	}
 }
 
 func (s *System) typingRoundLayout(g *gocui.Gui) error {
-	return s.renderTypingView(g, passage, s.completedPassage)
+	return s.renderTypingView()
 }
 
-func (s *System) handleTypingInputs(g *gocui.Gui, completed chan bool) {
-	og := passage
+func (s *System) handleTypingInputs() {
 
 outer:
 	for {
 		select {
 		case t := <-s.tr.keyStroke:
-			g.Update(func(g *gocui.Gui) error {
+			s.g.Update(func(g *gocui.Gui) error {
 				v, _ := g.View("paragraph")
-				return s.updatePromptView(v, og, t.key)
+				return s.updatePromptView(v, t.key)
 			})
-		case <-completed:
+		case <-s.completedPassage:
 			break outer
 		}
 	}
 
 }
 
-func (s *System) updatePromptView(v *gocui.View, og string, input gocui.Key) error {
+func (s *System) updatePromptView(v *gocui.View, input gocui.Key) error {
+	tr := s.tr
+	wordOutput := make([]string, len(tr.words))
 
-	wordOutput := make([]string, len(s.tr.words))
-
-	for i, w := range s.tr.words {
+	for i, w := range tr.words {
 		wordOutput[i] = w.text
 	}
 
@@ -146,9 +134,9 @@ func (s *System) updatePromptView(v *gocui.View, og string, input gocui.Key) err
 
 	if input == gocui.KeySpace {
 		if canMoveToNextWord {
-			s.tr.currentWordIndex++
-			s.tr.nextWord <- true
-			if s.tr.currentWordIndex == len(s.tr.words) {
+			tr.currentWordIndex++
+			tr.nextWord <- true
+			if tr.currentWordIndex == len(tr.words) {
 				s.completedPassage <- true
 				s.completedPassage <- true
 				s.completedPassage <- true
@@ -157,48 +145,51 @@ func (s *System) updatePromptView(v *gocui.View, og string, input gocui.Key) err
 		}
 	}
 
-	wordOutput[s.tr.currentWordIndex] = markWord(wordOutput[s.tr.currentWordIndex], s.isCorrectSoFar() || canMoveToNextWord)
+	wordOutput[tr.currentWordIndex] = markWord(wordOutput[tr.currentWordIndex], s.isCorrectSoFar() || canMoveToNextWord)
 
 	v.Clear()
 	fmt.Fprintln(v, strings.Join(wordOutput, " "))
 	return nil
 }
 
-func (s *System) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
-
-	if !s.tr.hasStarted {
-		s.tr.hasStarted = true
-		go func() {
-			start := time.Now()
-			s.tr.data = append(s.tr.data, 0)
-		outer:
-			for {
-				select {
-				case <-time.After(time.Second / 2):
-					if s.tr.currentWordIndex < len(s.tr.words) {
-						s.gui.Update(func(g *gocui.Gui) error {
-							wv, _ := g.View("WPM")
-							chars := s.tr.words[s.tr.currentWordIndex].index
-							t := time.Now()
-							curWPM := float64(chars) / t.Sub(start).Seconds() / 5 * 60
-							s.tr.data = append(s.tr.data, curWPM)
-							wv.Clear()
-							fmt.Fprintln(wv, int(curWPM))
-							return nil
-						})
-					}
-				case <-s.completedPassage:
-					break outer
-				}
+func (s *System) recordTypingStats() {
+	tr := s.tr
+	start := time.Now()
+	tr.data = append(s.tr.data, 0)
+outer:
+	for {
+		select {
+		case <-time.After(time.Second / 2):
+			if tr.currentWordIndex < len(tr.words) {
+				s.g.Update(func(g *gocui.Gui) error {
+					wv, _ := g.View("WPM")
+					chars := tr.words[tr.currentWordIndex].index
+					t := time.Now()
+					curWPM := float64(chars) / t.Sub(start).Seconds() / 5 * 60
+					tr.data = append(tr.data, curWPM)
+					wv.Clear()
+					fmt.Fprintln(wv, int(curWPM))
+					return nil
+				})
 			}
-		}()
+		case <-s.completedPassage:
+			break outer
+		}
+	}
+}
+
+func (s *System) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.Modifier) {
+	tr := s.tr
+	if !tr.hasStarted {
+		tr.hasStarted = true
+		go s.recordTypingStats()
 	}
 
 	ks := KeyStroke{
 		key:  key,
 		char: ch,
 	}
-	s.tr.keyStroke <- ks
+	tr.keyStroke <- ks
 	switch key {
 	case gocui.KeyBackspace2:
 		v.EditDelete(true)
@@ -211,9 +202,9 @@ func (s *System) typingEditor(v *gocui.View, key gocui.Key, ch rune, mod gocui.M
 		v.SetCursor(0, 0)
 	case gocui.KeySpace:
 		go func() {
-			nw := <-s.tr.nextWord
+			nw := <-tr.nextWord
 			if nw {
-				s.gui.Update(func(g *gocui.Gui) error {
+				s.g.Update(func(g *gocui.Gui) error {
 					v, _ := g.View("input")
 					v.SetCursor(0, 0)
 					v.Clear()

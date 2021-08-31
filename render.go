@@ -3,35 +3,34 @@ package main
 import (
 	"fmt"
 	"log"
-	"math/rand"
 
 	"github.com/guptarohit/asciigraph"
 	"github.com/jroimartin/gocui"
 )
 
-func (s *System) renderTypingView(g *gocui.Gui, p string, completed chan bool) error {
-	maxX, maxY := g.Size()
+func (s *System) renderTypingView() error {
+	maxX, maxY := s.g.Size()
 
-	g.Cursor = true
-	paragraphBottom := maxY - maxY/2
+	s.g.Cursor = true
+	paragraphBottom := maxY - maxY/4
 
-	if v, err := g.SetView("paragraph", 0, 0, maxX-1, paragraphBottom); err != nil {
+	if v, err := s.g.SetView("paragraph", 0, 0, maxX-1, paragraphBottom); err != nil {
 		if err != gocui.ErrUnknownView {
 			return err
 		}
-		printInitialPrompt(v, p)
+		printInitialPrompt(v, s.tr.originalPrompt)
 		v.Wrap = true
 		v.Title = "Prompt"
 	}
 
 	statsBottom := paragraphBottom + 1
 
-	if v, err := g.SetView("WPM", maxX-10, statsBottom-4, maxX-2, paragraphBottom-1); err != nil {
+	if v, err := s.g.SetView("WPM", maxX-10, statsBottom-4, maxX-2, paragraphBottom-1); err != nil {
 		v.Title = "WPM"
 	}
 
-	if v, err := g.SetView("input", 0, statsBottom+1, maxX-1, statsBottom+4); err != nil {
-		go s.handleTypingInputs(g, completed)
+	if v, err := s.g.SetView("input", 0, statsBottom+1, maxX-1, statsBottom+4); err != nil {
+		go s.handleTypingInputs()
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -40,26 +39,35 @@ func (s *System) renderTypingView(g *gocui.Gui, p string, completed chan bool) e
 
 		v.Wrap = true
 		v.Title = "Type Here"
-		g.SetCurrentView("input")
+		s.g.SetCurrentView("input")
+	}
+	s.g.DeleteKeybinding("input", gocui.KeyCtrlL, gocui.ModNone)
+	if err := s.g.SetKeybinding("input", gocui.KeyCtrlL, gocui.ModNone, s.nextTypingRound); err != nil {
+		log.Panicln(err)
+	}
+	if v, err := s.g.SetView("skip", 1, statsBottom-3, maxX/4, paragraphBottom); err != nil {
+		fmt.Fprintln(v, "Press CTRL + L to skip.")
+		v.Frame = false
 	}
 	return nil
 }
 
-func (s *System) renderStatsView(g *gocui.Gui) error {
+func (s *System) renderStatsView() error {
 	viewName := "stats"
-	maxX, maxY := g.Size()
+	maxX, maxY := s.g.Size()
 
-	if v, err := g.SetView(viewName, 0, 0, maxX-1, maxY-1); err != nil {
+	if v, err := s.g.SetView(viewName, 0, 0, maxX-1, maxY-1); err != nil {
 		v.Title = "Stats"
 		graph := asciigraph.Plot(s.tr.data, asciigraph.Height(maxY*90/100), asciigraph.Offset(2), asciigraph.Precision(0), asciigraph.Width(maxX*9/10))
 		fmt.Fprintln(v, graph)
-		g.SetCurrentView(viewName)
-		if err := g.SetKeybinding(viewName, gocui.KeyEnter, gocui.ModNone, s.quitStatsView); err != nil {
+		s.g.SetCurrentView(viewName)
+		s.g.DeleteKeybinding("stats", gocui.KeyEnter, gocui.ModNone)
+		if err := s.g.SetKeybinding(viewName, gocui.KeyEnter, gocui.ModNone, s.nextTypingRound); err != nil {
 			log.Panicln(err)
 		}
 	}
 
-	if v, err := g.SetView("averageWPM", maxX-10, 1, maxX-2, 3); err != nil {
+	if v, err := s.g.SetView("averageWPM", maxX-10, 1, maxX-2, 3); err != nil {
 		v.Title = "WPM"
 		averageWPM := 0.0
 		for _, i := range s.tr.data {
@@ -69,15 +77,17 @@ func (s *System) renderStatsView(g *gocui.Gui) error {
 		fmt.Fprintln(v, int(averageWPM))
 	}
 
-	if v, err := g.SetView("continue", maxX/2, maxY-3, maxX-1, maxY-1); err != nil {
+	if v, err := s.g.SetView("continue", maxX/2, maxY-3, maxX-1, maxY-1); err != nil {
 		fmt.Fprintln(v, "Press Enter to continue.")
 	}
 
 	return nil
 }
 
-func (s *System) quitStatsView(g *gocui.Gui, v *gocui.View) error {
-	i := rand.Intn(len(s.passages))
-	s.newPassage <- s.passages[i]
+func (s *System) nextTypingRound(g *gocui.Gui, v *gocui.View) error {
+	s.completedPassage <- false
+	s.completedPassage <- false
+	s.completedPassage <- false
+	s.newPassage <- getRandomPassage(s.passages)
 	return nil
 }

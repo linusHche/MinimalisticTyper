@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math/rand"
 	"strings"
 
 	"github.com/jroimartin/gocui"
@@ -20,11 +21,11 @@ func processPrompt(p string) []Word {
 }
 
 func (s *System) checkIfCanMoveOnToNextWord() bool {
-	return strings.TrimSpace(s.gui.CurrentView().ViewBuffer()) == s.tr.words[s.tr.currentWordIndex].text
+	return strings.TrimSpace(s.g.CurrentView().ViewBuffer()) == s.tr.words[s.tr.currentWordIndex].text
 }
 
 func (s *System) isCorrectSoFar() bool {
-	buffer := strings.TrimSpace(s.gui.CurrentView().ViewBuffer())
+	buffer := strings.TrimSpace(s.g.CurrentView().ViewBuffer())
 	return strings.HasPrefix(s.tr.words[s.tr.currentWordIndex].text, buffer) || buffer == ""
 }
 
@@ -45,6 +46,20 @@ func printInitialPrompt(v *gocui.View, s string) {
 	}
 }
 
-func isFinalWord() {
+func makeTypingRound(p string) *TypingRound {
+	return &TypingRound{
+		nextWord:         make(chan bool),
+		keyStroke:        make(chan KeyStroke),
+		originalPrompt:   p,
+		words:            processPrompt(p),
+		currentWordIndex: 0,
+		inputCorrect:     false,
+		hasStarted:       false,
+		data:             make([]float64, 0),
+	}
+}
 
+func getRandomPassage(p []string) string {
+	i := rand.Intn(len(p))
+	return p[i]
 }
