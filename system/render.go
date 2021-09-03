@@ -1,4 +1,4 @@
-package main
+package system
 
 import (
 	"fmt"
@@ -15,9 +15,11 @@ func (s *System) renderTypingView() error {
 	paragraphBottom := maxY - maxY/4
 
 	if v, err := s.g.SetView("paragraph", 0, 0, maxX-1, paragraphBottom); err != nil {
+		log.Println(err)
 		if err != gocui.ErrUnknownView {
 			return err
 		}
+		v.Clear()
 		printInitialPrompt(v, s.tr.originalPrompt)
 		v.Wrap = true
 		v.Title = "Prompt"
@@ -30,7 +32,7 @@ func (s *System) renderTypingView() error {
 	}
 
 	if v, err := s.g.SetView("input", 0, statsBottom+1, maxX-1, statsBottom+4); err != nil {
-		go s.handleTypingInputs()
+		go s.receivingTypingInputs()
 		if err != gocui.ErrUnknownView {
 			return err
 		}
@@ -58,8 +60,10 @@ func (s *System) renderStatsView() error {
 
 	if v, err := s.g.SetView(viewName, 0, 0, maxX-1, maxY-1); err != nil {
 		v.Title = "Stats"
-		graph := asciigraph.Plot(s.tr.data, asciigraph.Height(maxY*90/100), asciigraph.Offset(2), asciigraph.Precision(0), asciigraph.Width(maxX*9/10))
-		fmt.Fprintln(v, graph)
+		if len(s.tr.data) > 0 {
+			graph := asciigraph.Plot(s.tr.data, asciigraph.Height(maxY*90/100), asciigraph.Offset(2), asciigraph.Precision(0), asciigraph.Width(maxX*9/10))
+			fmt.Fprintln(v, graph)
+		}
 		s.g.SetCurrentView(viewName)
 		s.g.DeleteKeybinding("stats", gocui.KeyEnter, gocui.ModNone)
 		if err := s.g.SetKeybinding(viewName, gocui.KeyEnter, gocui.ModNone, s.nextTypingRound); err != nil {
@@ -84,10 +88,17 @@ func (s *System) renderStatsView() error {
 	return nil
 }
 
-func (s *System) nextTypingRound(g *gocui.Gui, v *gocui.View) error {
-	s.completedPassage <- false
-	s.completedPassage <- false
-	s.completedPassage <- false
-	s.newPassage <- getRandomPassage(s.passages)
-	return nil
+func (s *System) restartTypingView(p string) {
+	s.g.Update(func(g *gocui.Gui) error {
+		s.tr = makeTypingRound(p)
+
+		g.DeleteView("paragraph")
+		g.DeleteView("WPM")
+		g.DeleteView("input")
+		g.DeleteView("stats")
+		g.DeleteView("averageWPM")
+		g.DeleteView("continue")
+		g.DeleteView("skip")
+		return nil
+	})
 }
